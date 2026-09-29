@@ -1,0 +1,34 @@
+name: tuberia-simple
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  poiseuille:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar compilador y OpenCL en CPU (PoCL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ make ocl-icd-libopencl1 pocl-opencl-icd clinfo
+
+      - name: Dispositivos OpenCL disponibles
+        run: clinfo -l
+
+      - name: Compilar
+        run: make Linux
+
+      - name: Correr tuberia simple (falla si el error L2 supera el umbral)
+        run: bin/FluidX3D 2>&1 | tee tuberia-simple.log; exit ${PIPESTATUS[0]}
+
+      - name: Guardar log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuberia-simple-log
+          path: tuberia-simple.log

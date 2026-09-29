@@ -37,6 +37,53 @@ void main_setup() { // benchmark; required extensions in defines.hpp: BENCHMARK,
 
 
 
+#ifndef BENCHMARK
+void main_setup() { // tuberia simple: flujo de Poiseuille en tubo circular, validado contra la solucion analitica; required extensions in defines.hpp: VOLUME_FORCE
+	// termina con exit(0) si el error L2 converge bajo el umbral y con exit(1) si no, para poder usarlo en una tuberia de CI
+	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
+	const uint R = 31u; // radio del tubo en celdas de red
+	const float umax = 0.1f; // velocidad maxima en el eje del tubo (unidades LBM, debe ser < 0.57735027f)
+	const float tau = 1.0f; // tiempo de relajacion (debe ser > 0.5f), tau = nu*3+0.5
+	const float nu = units.nu_from_tau(tau);
+	const ulong max_steps = 200000ull; // tope de pasos si el error no converge
+	const double error_threshold = 0.05; // error L2 relativo aceptado (tipico 2-5%, Krueger p. 256)
+	const uint H = 2u*(R+1u);
+	LBM lbm(H, lcm(sq(H), WORKGROUP_SIZE)/sq(H), H, nu, 0.0f, units.f_from_u_Poiseuille_3D(umax, 1.0f, nu, R), 0.0f); // eje del tubo en y, flujo impulsado por fuerza de volumen (gradiente de presion)
+	// ###################################################################################### define geometry ######################################################################################
+	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
+		if(!cylinder(x, y, z, lbm.center(), float3(0u, Ny, 0u), 0.5f*(float)min(Nx, Nz)-1.0f)) lbm.flags[n] = TYPE_S; // pared del tubo
+	}); // ####################################################################### run simulation, export images and data ##########################################################################
+	double error_min = max_double;
+	while(lbm.get_t()<max_steps) {
+		lbm.run(1000u);
+		lbm.u.read_from_device();
+		double error_dif=0.0, error_sum=0.0;
+		const uint y = Ny/2u;
+		for(uint z=0u; z<Nz; z++) {
+			for(uint x=0u; x<Nx; x++) {
+				const uint n = x+(y+z*Ny)*Nx;
+				const double r = (double)sqrt(sq(x+0.5f-0.5f*(float)Nx)+sq(z+0.5f-0.5f*(float)Nz)); // distancia al eje
+				if(r<R) {
+					const double unum = (double)sqrt(sq(lbm.u.x[n])+sq(lbm.u.y[n])+sq(lbm.u.z[n]));
+					const double uref = umax*(sq(R)-sq(r))/sq(R); // perfil parabolico analitico
+					error_dif += sq(unum-uref);
+					error_sum += sq(uref);
+				}
+			}
+		}
+		const double error = sqrt(error_dif/error_sum);
+		if(error>=error_min) break; // el error dejo de bajar: convergio
+		error_min = error;
+		print_info("Tuberia simple: error L2 en t="+to_string(lbm.get_t())+" es "+to_string(100.0*error_min, 3u)+"%");
+	}
+	const bool ok = error_min<error_threshold;
+	print_info("Tuberia simple: error L2 final "+to_string(100.0*error_min, 3u)+"% tras "+to_string(lbm.get_t())+" pasos -> "+(ok ? "OK" : "FALLA")+" (umbral "+to_string(100.0*error_threshold, 1u)+"%)");
+	exit(ok ? 0 : 1);
+} /**/
+#endif // BENCHMARK
+
+
+
 /*void main_setup() { // 3D Taylor-Green vortices; required extensions in defines.hpp: INTERACTIVE_GRAPHICS
 	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
 	LBM lbm(128u, 128u, 128u, 1u, 1u, 1u, 0.01f);
