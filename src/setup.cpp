@@ -48,11 +48,20 @@ void main_setup() { // tuberia simple: flujo de Poiseuille en tubo circular, val
 	const ulong max_steps = 200000ull; // tope de pasos si el error no converge
 	const double error_threshold = 0.05; // error L2 relativo aceptado (tipico 2-5%, Krueger p. 256)
 	const uint H = 2u*(R+1u);
-	LBM lbm(H, lcm(sq(H), WORKGROUP_SIZE)/sq(H), H, nu, 0.0f, units.f_from_u_Poiseuille_3D(umax, 1.0f, nu, R), 0.0f); // eje del tubo en y, flujo impulsado por fuerza de volumen (gradiente de presion)
+#ifndef GRAPHICS
+	const uint L = lcm(sq(H), WORKGROUP_SIZE)/sq(H); // sin graficos basta un tramo minimo del tubo (periodico en y)
+#else // GRAPHICS
+	const uint L = 4u*H; // con graficos, un tramo mas largo para que se vea el tubo
+#endif // GRAPHICS
+	LBM lbm(H, L, H, nu, 0.0f, units.f_from_u_Poiseuille_3D(umax, 1.0f, nu, R), 0.0f); // eje del tubo en y, flujo impulsado por fuerza de volumen (gradiente de presion)
 	// ###################################################################################### define geometry ######################################################################################
 	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
 		if(!cylinder(x, y, z, lbm.center(), float3(0u, Ny, 0u), 0.5f*(float)min(Nx, Nz)-1.0f)) lbm.flags[n] = TYPE_S; // pared del tubo
 	}); // ####################################################################### run simulation, export images and data ##########################################################################
+#ifdef GRAPHICS
+	lbm.graphics.visualization_modes = VIS_FLAG_LATTICE|VIS_FIELD; // pared del tubo + campo de velocidad
+	lbm.graphics.slice_mode = 1; // corte longitudinal por el eje del tubo
+#endif // GRAPHICS
 	double error_min = max_double;
 	while(lbm.get_t()<max_steps) {
 		lbm.run(1000u);
@@ -78,7 +87,11 @@ void main_setup() { // tuberia simple: flujo de Poiseuille en tubo circular, val
 	}
 	const bool ok = error_min<error_threshold;
 	print_info("Tuberia simple: error L2 final "+to_string(100.0*error_min, 3u)+"% tras "+to_string(lbm.get_t())+" pasos -> "+(ok ? "OK" : "FALLA")+" (umbral "+to_string(100.0*error_threshold, 1u)+"%)");
+#ifndef GRAPHICS
 	exit(ok ? 0 : 1);
+#else // GRAPHICS
+	lbm.run(); // con graficos, la ventana sigue abierta y la simulacion continua
+#endif // GRAPHICS
 } /**/
 #endif // BENCHMARK
 
