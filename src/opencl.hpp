@@ -228,6 +228,7 @@ inline vector<Device_Info> get_devices(const bool print_info=true) { // returns 
 	cl::Platform::get(&cl_platforms);
 	uint id = 0u;
 	for(uint i=0u; i<(uint)cl_platforms.size(); i++) {
+		if(contains(cl_platforms[i].getInfo<CL_PLATFORM_NAME>(), "OpenCLOn12")) continue; // tuberia simple: se omite la capa de compatibilidad OpenCL sobre D3D12 de Microsoft; lanza una excepcion no capturada al consultar algunas iGPU AMD y aborta el programa
 		vector<cl::Device> cl_devices;
 		cl_platforms[i].getDevices(CL_DEVICE_TYPE_ALL, &cl_devices);
 		//cl::Context cl_context(cl_devices); // same cl::Context for all devices (allocates extra VRAM on all other unused Nvidia GPUs)
