@@ -21,7 +21,7 @@ jobs:
         run: clinfo -l
 
       - name: Compilar
-        run: make Linux
+        run: make Linux CFLAGS="-std=c++17 -pthread -O -Wno-comment -DCASO_TUBERIA" # el caso por defecto (Rushton) es demasiado pesado para CPU
 
       - name: Correr tuberia simple (falla si el error L2 supera el umbral)
         run: bin/FluidX3D 2>&1 | tee tuberia-simple.log; exit ${PIPESTATUS[0]}

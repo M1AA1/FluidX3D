@@ -37,7 +37,7 @@ void main_setup() { // benchmark; required extensions in defines.hpp: BENCHMARK,
 
 
 
-#ifndef BENCHMARK
+#if !defined(BENCHMARK) && defined(CASO_TUBERIA)
 void main_setup() { // tuberia simple: flujo de Poiseuille en tubo circular, validado contra la solucion analitica; required extensions in defines.hpp: VOLUME_FORCE
 	// termina con exit(0) si el error L2 converge bajo el umbral y con exit(1) si no, para poder usarlo en una tuberia de CI
 	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
@@ -93,7 +93,171 @@ void main_setup() { // tuberia simple: flujo de Poiseuille en tubo circular, val
 	lbm.run(); // con graficos, la ventana sigue abierta y la simulacion continua
 #endif // GRAPHICS
 } /**/
-#endif // BENCHMARK
+#endif // CASO_TUBERIA
+
+
+
+#if !defined(BENCHMARK) && defined(CASO_RUSHTON)
+inline void malla_caja(Mesh* mesh, uint& i, const float3& c, const float3& a, const float3& b, const float3& h) { // caja centrada en c con semiejes a, b, h (12 triangulos)
+	const float3 p[8] = { c-a-b-h, c+a-b-h, c+a+b-h, c-a+b-h, c-a-b+h, c+a-b+h, c+a+b+h, c-a+b+h };
+	const uint f[12][3] = { {0u,2u,1u}, {0u,3u,2u}, {4u,5u,6u}, {4u,6u,7u}, {0u,1u,5u}, {0u,5u,4u}, {1u,2u,6u}, {1u,6u,5u}, {2u,3u,7u}, {2u,7u,6u}, {3u,0u,4u}, {3u,4u,7u} };
+	for(uint k=0u; k<12u; k++) { mesh->p0[i]=p[f[k][0]]; mesh->p1[i]=p[f[k][1]]; mesh->p2[i]=p[f[k][2]]; i++; }
+}
+inline void malla_disco(Mesh* mesh, uint& i, const float3& c, const float r, const float h, const uint lados) { // prisma poligonal de eje z, radio r y semialtura h (4*lados triangulos)
+	const float3 cb=c-float3(0.0f, 0.0f, h), ct=c+float3(0.0f, 0.0f, h);
+	for(uint k=0u; k<lados; k++) {
+		const float a0=2.0f*pif*(float)k/(float)lados, a1=2.0f*pif*(float)(k+1u)/(float)lados;
+		const float3 q0=float3(r*cosf(a0), r*sinf(a0), 0.0f), q1=float3(r*cosf(a1), r*sinf(a1), 0.0f);
+		mesh->p0[i]=cb; mesh->p1[i]=cb+q1; mesh->p2[i]=cb+q0; i++; // fondo
+		mesh->p0[i]=ct; mesh->p1[i]=ct+q0; mesh->p2[i]=ct+q1; i++; // tapa
+		mesh->p0[i]=cb+q0; mesh->p1[i]=cb+q1; mesh->p2[i]=ct+q1; i++; // costado
+		mesh->p0[i]=cb+q0; mesh->p1[i]=ct+q1; mesh->p2[i]=ct+q0; i++;
+	}
+}
+inline double potencia_disipada(LBM& lbm, const float nu) { // P = sum 2*(nu+nu_t)*S:S sobre celdas de fluido con vecinas de fluido; gradientes por diferencias centradas
+	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz();
+	const float cs2 = 0.76421222f/(18.0f*sqrt(2.0f)); // (C*Delta)^2 que usa el kernel SUBGRID de FluidX3D (C ~ 0.173)
+	lbm.u.read_from_device();
+	lbm.flags.read_from_device();
+	vector<double> suma(Nz, 0.0);
+	parallel_for(Nz, [&](ulong zl) { const uint z=(uint)zl; if(z==0u||z>=Nz-1u) return;
+		double s = 0.0;
+		for(uint y=1u; y<Ny-1u; y++) for(uint x=1u; x<Nx-1u; x++) {
+			const ulong n=lbm.index(x, y, z), xp=lbm.index(x+1u, y, z), xm=lbm.index(x-1u, y, z), yp=lbm.index(x, y+1u, z), ym=lbm.index(x, y-1u, z), zp=lbm.index(x, y, z+1u), zm=lbm.index(x, y, z-1u);
+			if((lbm.flags[n]|lbm.flags[xp]|lbm.flags[xm]|lbm.flags[yp]|lbm.flags[ym]|lbm.flags[zp]|lbm.flags[zm])&TYPE_S) continue; // solo fluido rodeado de fluido
+			const float dudx=0.5f*(lbm.u.x[xp]-lbm.u.x[xm]), dudy=0.5f*(lbm.u.x[yp]-lbm.u.x[ym]), dudz=0.5f*(lbm.u.x[zp]-lbm.u.x[zm]);
+			const float dvdx=0.5f*(lbm.u.y[xp]-lbm.u.y[xm]), dvdy=0.5f*(lbm.u.y[yp]-lbm.u.y[ym]), dvdz=0.5f*(lbm.u.y[zp]-lbm.u.y[zm]);
+			const float dwdx=0.5f*(lbm.u.z[xp]-lbm.u.z[xm]), dwdy=0.5f*(lbm.u.z[yp]-lbm.u.z[ym]), dwdz=0.5f*(lbm.u.z[zp]-lbm.u.z[zm]);
+			const float SS = sq(dudx)+sq(dvdy)+sq(dwdz)+0.5f*(sq(dudy+dvdx)+sq(dudz+dwdx)+sq(dvdz+dwdy)); // S:S
+			const float nut = cs2*sqrt(2.0f*SS);
+			s += 2.0*(double)(nu+nut)*(double)SS;
+		}
+		suma[z] = s;
+	});
+	double P = 0.0;
+	for(uint z=0u; z<Nz; z++) P += suma[z];
+	return P;
+}
+void main_setup() { // tanque agitado Rushton estandar, validacion del numero de potencia; required extensions in defines.hpp: FORCE_FIELD, MOVING_BOUNDARIES, SUBGRID
+	// geometria estandar (Hartmann et al. 2004, CES 59:2419): H=T, D=T/3, C=T/3, 4 deflectores de ancho 0.1T separados 0.017T de la pared,
+	// disco de diametro 0.75D, 6 palas de 0.25D (radial) x 0.2D (alto), tapa no deslizante en H
+	// parametros numericos de referencia (Derksen & Van den Akker 1999, AIChE J. 45:209): D=60 celdas, Re=29000, punta ~0.1, Smagorinsky
+	// supuestos propios, no del estandar: espesor de palas, disco y deflectores, diametro del eje
+	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
+#ifndef RUSHTON_D
+#define RUSHTON_D 60.0f
+#endif // RUSHTON_D
+#ifndef RUSHTON_DT
+#define RUSHTON_DT 5u
+#endif // RUSHTON_DT
+	const float D = RUSHTON_D; // diametro del impulsor en celdas (se puede cambiar al compilar: /DRUSHTON_D=80.0f)
+	const float Re = 29000.0f; // Re = N*D^2/nu
+	const float u_punta = 0.1f; // velocidad de punta de pala en unidades de red
+	const uint dt = RUSHTON_DT; // pasos entre re-voxelizaciones; la punta avanza u_punta*dt = 0.5 celdas (debe ser <= 1)
+	const uint rev_arranque = 10u, rev_estadistica = 20u; // revoluciones descartadas y revoluciones promediadas
+	const float T = 3.0f*D; // diametro del tanque = altura de liquido
+	const uint N = to_uint(T)+2u; // caja: liquido de T celdas mas una celda de pared por lado
+	const uint pasos_rev = max(1u, to_uint(pif*D/(u_punta*(float)dt)+0.5f))*dt; // multiplo entero de dt: se muestrea siempre en la misma fase del intervalo
+	const float omega = 2.0f*pif/(float)pasos_rev; // velocidad angular [rad/paso]
+	const float n_rev = 1.0f/(float)pasos_rev; // frecuencia de giro [rev/paso]
+	const float nu = n_rev*sq(D)/Re;
+	LBM lbm(N, N, N, 1u, 1u, 1u, nu);
+	// ###################################################################################### define geometry ######################################################################################
+	const float3 c = lbm.center(); // el eje del tanque pasa por el centro de la caja
+	const float R = 0.5f*T, zc = 0.5f+T/3.0f; // radio del tanque; altura del plano del disco (pared de fondo en z=0, rebote a media celda)
+	const float ancho_deflector=0.1f*T, holgura_deflector=0.017f*T, espesor_deflector=2.0f; // espesor: supuesto propio
+	const float espesor_pala = fmax(2.0f, 0.04f*D); // supuesto propio: >= 2 celdas para que la pala no quede con huecos al rotar
+	const float radio_eje = fmax(2.0f, 0.08f*D); // supuesto propio
+	const uint Nz = lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
+		const float px=(float)x-c.x, py=(float)y-c.y, r=sqrt(sq(px)+sq(py));
+		bool pared = r>R||z==0u||z==Nz-1u; // manto, fondo y tapa
+		for(uint k=0u; k<4u; k++) { // deflectores a 0, 90, 180 y 270 grados
+			const float a=0.5f*pif*(float)k, rr=px*cosf(a)+py*sinf(a), tt=-px*sinf(a)+py*cosf(a);
+			if(rr>=R-holgura_deflector-ancho_deflector&&rr<=R-holgura_deflector&&fabs(tt)<=0.5f*espesor_deflector) pared = true;
+		}
+		if(pared) lbm.flags[n] = TYPE_S|TYPE_Y; // paredes fijas: aqui se mide el torque de reaccion
+		if(r<=radio_eje&&(float)z>=zc) { // eje: simetria de revolucion, se marca una sola vez con velocidad tangencial
+			lbm.flags[n] = TYPE_S;
+			lbm.u.x[n] = -omega*py;
+			lbm.u.y[n] =  omega*px;
+		}
+	});
+	const float3 ci = float3(c.x, c.y, zc); // centro del impulsor
+	const uint lados = 48u;
+	Mesh* disco = new Mesh(4u*lados, ci);
+	uint i = 0u;
+	malla_disco(disco, i, ci, 0.375f*D, 0.5f*espesor_pala, lados);
+	disco->find_bounds();
+	Mesh* palas = new Mesh(6u*12u, ci); // malla aparte: si palas y disco se solapan en una misma malla, el conteo de cruces del voxelizador deja el solape como fluido
+	i = 0u;
+	for(uint k=0u; k<6u; k++) {
+		const float a = 2.0f*pif*(float)k/6.0f;
+		const float3 er=float3(cosf(a), sinf(a), 0.0f), et=float3(-sinf(a), cosf(a), 0.0f);
+		malla_caja(palas, i, ci+0.375f*D*er, 0.125f*D*er, 0.5f*espesor_pala*et, float3(0.0f, 0.0f, 0.1f*D)); // pala de r=0.25D a r=0.5D, alto 0.2D
+	}
+	palas->find_bounds();
+	// ####################################################################### run simulation, export images and data ##########################################################################
+#ifdef GRAPHICS
+	lbm.graphics.visualization_modes = VIS_FIELD|VIS_Q_CRITERION; // corte por el eje coloreado por velocidad + vortices de estela
+	lbm.graphics.slice_mode = 1;
+#endif // GRAPHICS
+	const ulong t_total = (ulong)(rev_arranque+rev_estadistica)*(ulong)pasos_rev;
+	print_info("Rushton: T="+to_string(to_uint(T))+" D="+to_string(to_uint(D))+" Re="+to_string(to_uint(Re))+" pasos/rev="+to_string(pasos_rev)+" nu="+to_string(nu, 8u)+" tau="+to_string(3.0f*nu+0.5f, 6u));
+	const string archivo = get_exe_path()+"rushton_torque.csv";
+	write_file(archivo, "t,rev,M_paredes,M_impulsor\n");
+	const float3 eje = float3(0.0f); // object_torque usa coordenadas centradas en la caja; solo interesa la componente z
+	const double escala_Po = 2.0*(double)pif/(sq((double)n_rev)*pow((double)D, 5.0)); // Po = P/(rho*N^3*D^5) con P = M*omega, rho = 1
+	const uint muestreo = 5u; // se mide el torque cada 5 intervalos de re-voxelizacion
+	double suma_rev_p=0.0, suma_rev_i=0.0, suma_p=0.0, suma_i=0.0, suma2_rev_p=0.0;
+	double suma_diss=0.0; uint muestras_diss=0u;
+	uint muestras_rev=0u, revs_estadistica=0u;
+	ulong muestras=0ull;
+	lbm.run(0u, t_total); // inicializa
+	{ // control de geometria: celdas del impulsor tras la primera voxelizacion frente al volumen nominal
+		lbm.voxelize_mesh_on_device(palas, TYPE_S|TYPE_X|TYPE_Y, ci, float3(0.0f), float3(0.0f, 0.0f, omega));
+		lbm.voxelize_mesh_on_device(disco, TYPE_S|TYPE_X, ci, float3(0.0f), float3(0.0f, 0.0f, omega));
+		lbm.flags.read_from_device();
+		ulong celdas_palas=0ull, celdas_disco=0ull;
+		for(ulong n=0ull; n<lbm.get_N(); n++) { if(lbm.flags[n]==(TYPE_S|TYPE_X|TYPE_Y)) celdas_palas++; if(lbm.flags[n]==(TYPE_S|TYPE_X)) celdas_disco++; }
+		const double v_palas=6.0*0.25*0.2*sq((double)D)*(double)espesor_pala, v_disco=(double)pif*sq(0.375*(double)D)*(double)espesor_pala; // volumenes nominales; el solape palas-disco queda contado como palas
+		print_info("Rushton geometria: celdas palas = "+to_string(celdas_palas)+" (nominal "+to_string(to_uint((float)v_palas))+"), celdas disco = "+to_string(celdas_disco)+" (nominal "+to_string(to_uint((float)v_disco))+" menos el solape con las palas)");
+	}
+	for(uint intervalo=1u; lbm.get_t()<t_total; intervalo++) {
+		lbm.voxelize_mesh_on_device(palas, TYPE_S|TYPE_X|TYPE_Y, ci, float3(0.0f), float3(0.0f, 0.0f, omega)); // primero palas, despues disco: el disco repone las celdas que las palas liberan sobre el
+		lbm.voxelize_mesh_on_device(disco, TYPE_S|TYPE_X, ci, float3(0.0f), float3(0.0f, 0.0f, omega));
+		lbm.run(dt, t_total);
+		palas->rotate(float3x3(float3(0.0f, 0.0f, 1.0f), omega*(float)dt));
+		disco->rotate(float3x3(float3(0.0f, 0.0f, 1.0f), omega*(float)dt));
+		if(intervalo%muestreo==0u) {
+			const float m_p = lbm.object_torque(eje, TYPE_S|TYPE_Y).z; // reaccion sobre manto, fondo, tapa y deflectores: medida principal
+			const float m_i = lbm.object_torque(eje, TYPE_S|TYPE_X).z+lbm.object_torque(eje, TYPE_S|TYPE_X|TYPE_Y).z; // impulsor re-voxelizado: solo control, el autor advierte que no es fiable
+			write_line(archivo, to_string(lbm.get_t())+","+to_string((double)lbm.get_t()*(double)n_rev, 4u)+","+to_string(m_p, 6u)+","+to_string(m_i, 6u)+"\n");
+			suma_rev_p += (double)m_p; suma_rev_i += (double)m_i; muestras_rev++;
+			if(lbm.get_t()>(ulong)rev_arranque*(ulong)pasos_rev) { suma_p += (double)m_p; suma_i += (double)m_i; muestras++; }
+		}
+		if(lbm.get_t()%(ulong)pasos_rev==0ull&&muestras_rev>0u) {
+			const uint rev = (uint)(lbm.get_t()/(ulong)pasos_rev);
+			if(rev>rev_arranque) { suma_diss += potencia_disipada(lbm, nu); muestras_diss++; } // verificacion cruzada independiente del torque
+			const double po_p=escala_Po*suma_rev_p/(double)muestras_rev, po_i=-escala_Po*suma_rev_i/(double)muestras_rev;
+			if(rev>rev_arranque) { suma2_rev_p += sq(po_p); revs_estadistica++; }
+			print_info("Rushton rev "+to_string(rev)+(rev<=rev_arranque ? " (arranque)" : "")+": Po paredes = "+to_string(po_p, 3u)+" | Po impulsor (control) = "+to_string(po_i, 3u));
+			suma_rev_p=0.0; suma_rev_i=0.0; muestras_rev=0u;
+		}
+	}
+	const double po_p=escala_Po*suma_p/(double)max(muestras, 1ull), po_i=-escala_Po*suma_i/(double)max(muestras, 1ull);
+	const double de_p = revs_estadistica>1u ? sqrt(fmax(suma2_rev_p/(double)revs_estadistica-sq(po_p), 0.0)) : 0.0; // dispersion entre revoluciones
+	const bool en_rango = po_p>=4.6&&po_p<=5.9; // rango experimental citado por Derksen & Van den Akker 1999 para Re ~ 30000
+	print_info("Rushton resultado: Po paredes = "+to_string(po_p, 3u)+" +- "+to_string(de_p, 3u)+" (dispersion entre "+to_string(revs_estadistica)+" rev) | Po impulsor (control) = "+to_string(po_i, 3u)+" | referencia 4.6-5.9 -> "+(en_rango ? "DENTRO" : "FUERA"));
+	const double po_diss = muestras_diss>0u ? suma_diss/(double)muestras_diss/(cb((double)n_rev)*pow((double)D, 5.0)) : 0.0; // Po = P/(rho*N^3*D^5)
+	print_info("Rushton disipacion: Po por disipacion integrada = "+to_string(po_diss, 3u)+" (promedio de "+to_string(muestras_diss)+" instantaneas; gradientes por diferencias finitas, subestima cerca de paredes)");
+	print_info("Serie de torque en "+archivo);
+	delete palas;
+	delete disco;
+#ifdef GRAPHICS
+	lbm.run(); // con graficos, la ventana sigue abierta
+#endif // GRAPHICS
+} /**/
+#endif // CASO_RUSHTON
 
 
 

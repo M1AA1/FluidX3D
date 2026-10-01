@@ -15,7 +15,7 @@
 
 //#define BENCHMARK // disable all extensions and setups and run benchmark setup instead
 
-#define VOLUME_FORCE // enables global force per volume in one direction (equivalent to a pressure gradient); specified in the LBM class constructor; the force can be changed on-the-fly between time steps at no performance cost
+//#define VOLUME_FORCE // enables global force per volume in one direction (equivalent to a pressure gradient); specified in the LBM class constructor; the force can be changed on-the-fly between time steps at no performance cost
 //#define FORCE_FIELD // enables computing the forces on solid boundaries with lbm.update_force_field(); and enables setting the force for each lattice point independently (enable VOLUME_FORCE too); allocates an extra 12 Bytes/cell
 //#define EQUILIBRIUM_BOUNDARIES // enables fixing the velocity/density by marking cells with TYPE_E; can be used for inflow/outflow; does not reflect shock waves
 //#define MOVING_BOUNDARIES // enables moving solids: set solid cells to TYPE_S and set their velocity u unequal to zero
@@ -24,9 +24,25 @@
 //#define SUBGRID // enables Smagorinsky-Lilly subgrid turbulence LES model to keep simulations with very large Reynolds number stable
 //#define PARTICLES // enables particles with immersed-boundary method (for 2-way coupling also activate VOLUME_FORCE and FORCE_FIELD; only supported in single-GPU)
 
+// ---- fork M1AA1/FluidX3D: seleccion del caso (uno solo activo) ----
+// CASO_TUBERIA: Poiseuille en tubo circular, validacion contra solucion analitica (es el caso de la CI)
+// CASO_RUSHTON: tanque agitado Rushton estandar, validacion del numero de potencia contra literatura
+// en la CI se fuerza el caso desde la linea de compilacion: make Linux CFLAGS="... -DCASO_TUBERIA"
+#if !defined(CASO_TUBERIA) && !defined(CASO_RUSHTON)
+#define CASO_RUSHTON // caso por defecto al compilar en Windows
+#endif
+#if defined(CASO_TUBERIA)
+#define VOLUME_FORCE
+#elif defined(CASO_RUSHTON)
+#define FORCE_FIELD
+#define MOVING_BOUNDARIES
+#define SUBGRID
+#endif
+
+
 //#define INTERACTIVE_GRAPHICS // enable interactive graphics; start/pause the simulation by pressing P; either Windows or Linux X11 desktop must be available; on Linux: change to "compile on Linux with X11" command in make.sh
 //#define INTERACTIVE_GRAPHICS_ASCII // enable interactive graphics in ASCII mode the console; start/pause the simulation by pressing P
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(SIN_GRAFICOS) // compilar con /DSIN_GRAFICOS para una corrida de consola sin ventana
 #define INTERACTIVE_GRAPHICS // tuberia simple: ventana interactiva en Windows; en Linux (CI) corre sin graficos
 #endif // _WIN32
 //#define GRAPHICS // run FluidX3D in the console, but still enable graphics functionality for writing rendered frames to the hard drive
