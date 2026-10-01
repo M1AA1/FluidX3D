@@ -18,24 +18,34 @@ Caso `CASO_RUSHTON` de `src/setup.cpp`. Corridas del 2026-10-01 en una RTX 3050 
 |---|---|---|
 | Re-voxelización cada 5 pasos | **2,17** (bloques de 5 rev: 2,12–2,19) | Po por disipación integrada: 0,90 (cota inferior) |
 | Re-voxelización cada paso | **2,82** (bloques de 5 rev: 2,76–2,85) | — |
+| Cada paso, voxelizador corregido, D = 60 | **2,98** ± 0,12 (bloques: 2,95–3,02) | Po por disipación: 0,99 |
+| Cada paso, voxelizador corregido, D = 78 (T = 234) | **3,04** ± 0,18 (bloques: 2,90–3,21) | Po por disipación: 1,11 |
 | Referencia experimental (Derksen & Van den Akker 1999, Re ≈ 30 000) | 4,6–5,9 | — |
 
-**Veredicto: no valida.** Las dos variantes quedan bajo el rango.
+**Veredicto: no valida.** Ninguna variante entra en el rango.
+
+**Lo que explica cada factor:**
+
+- La resolución no explica el déficit: de D = 60 a D = 78, Po pasa de 2,98 a 3,04 (+2 %).
+- El arreglo del voxelizador suma un 6 %.
+- El intervalo de re-voxelización suma un 30 %, pero ya está en su mínimo posible (cada paso).
+
+Po converge a ≈ 3, un 35–50 % bajo la referencia. **El déficit es del método de impulsor re-voxelizado con bounce-back**, no de la malla. Con este método, FluidX3D no sirve para números de potencia de tanques agitados.
 
 ## Observaciones
 
 1. **El resultado depende del intervalo de re-voxelización.** Pasar de 5 pasos a 1 sube Po un 30 %. Es la dependencia que advierte el autor de FluidX3D en el issue #141.
 2. **El torque sobre el impulsor no sirve.** Da −119 a −132, sin sentido físico. Las celdas interiores del impulsor llevan velocidad impuesta y `update_force_field` les asigna una fuerza 2ρu que sesga la suma. Por eso la medida principal es el torque de reacción sobre las paredes fijas.
-3. **El voxelizador pierde una capa a lo largo del eje de giro.** Trunca a enteros las distancias de cruce (`(ushort)d` en `voxelize_mesh`). Efectos medidos:
+3. **El voxelizador perdía una capa a lo largo del eje de giro (corregido en este fork).** Trunca a enteros las distancias de cruce (`(ushort)d` en `voxelize_mesh`). Efectos medidos:
    - palas: 2244 celdas de 2592 nominales (11 capas de alto en vez de 12);
    - disco: 1472 celdas, cuando deberían ser ≈ 2900 (1 capa en vez de 2).
+
+   La causa es la condición `h<hmesh` del kernel `voxelize_mesh`: `hmesh` es la distancia a la última intersección truncada a entero, y la celda en `h = hmesh` todavía está dentro del sólido. Este fork la cambia a `h<=hmesh`. Con eso, a D = 60, las palas quedan con 2448 celdas y el disco con 2944. El defecto afecta a toda malla voxelizada, no solo a las que giran.
 4. **La disipación integrada es una cota inferior.** Da Po = 0,90 porque excluye las celdas vecinas a sólidos y usa diferencias finitas. Que quede bajo el torque de paredes es coherente: ambas medidas indican que el impulsor simulado transfiere poca potencia, no que el torque esté mal medido.
 5. **El torque instantáneo oscila ±115–150 % alrededor de la media.** Es coherente con pulsos de presión generados en cada re-voxelización. Los promedios por bloques son estables.
 6. **Las corridas son deterministas.** Repetir la variante de 5 pasos dio exactamente el mismo Po (2,167).
 7. **Rendimiento.** Con cargador conectado, la variante de 5 pasos tarda unos 5 minutos y la de 1 paso unos 12. Con batería, la GPU baja a estado P5 y rinde unas 8 veces menos.
 
-## Causas posibles aún no separadas
+## Causa más probable del déficit
 
-- La re-voxelización discreta borra fluido donde entra la pala y crea fluido en equilibrio donde sale, en vez de empujarlo. Eso puede reducir la presión frente a la pala.
-- La pérdida de una capa de altura de las palas explica a lo sumo un ≈ 8 %.
-- La resolución: palas de 2–3 celdas con paredes en escalera, a D = 60.
+La re-voxelización discreta borra fluido donde entra la pala y crea fluido en equilibrio donde sale, en vez de empujarlo. Eso reduciría la sobrepresión frente a la pala, que es la que genera el arrastre de forma, y por lo tanto la potencia. No está demostrado: es la hipótesis que queda tras descartar la resolución y la geometría. Para comprobarla habría que representar el impulsor con fronteras inmersas (campo de fuerzas, como Derksen & Van den Akker), que es un cambio mayor de núcleo.

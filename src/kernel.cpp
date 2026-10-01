@@ -2325,7 +2325,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 			inside = !inside; // passed mesh intersection, so switch inside/outside state
 			intersection++;
 		}
-		inside = inside&&(intersection<intersections&&h<hmesh); // point must be outside if there are no more ray-mesh intersections ahead (error correction)
+		inside = inside&&(intersection<intersections&&h<=hmesh); // point must be outside if there are no more ray-mesh intersections ahead (error correction); fork: h<=hmesh, con h<hmesh se perdia la ultima capa porque hmesh es la distancia truncada a entero
 		const uxx n = index((uint3)(direction==0u?h:xyz.x, direction==1u?h:xyz.y, direction==2u?h:xyz.z));
 		uchar flagsn = flags[n];
 		const float3 p = position(coordinates(n))+offset;
