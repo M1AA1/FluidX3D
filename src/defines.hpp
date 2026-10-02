@@ -27,14 +27,18 @@
 // ---- fork M1AA1/FluidX3D: seleccion del caso (uno solo activo) ----
 // CASO_TUBERIA: Poiseuille en tubo circular, validacion contra solucion analitica (es el caso de la CI)
 // CASO_RUSHTON: tanque agitado Rushton estandar, validacion del numero de potencia contra literatura
+// CASO_R201: tanque tipo R-201 con palas inclinadas a 45 grados, patron de flujo cualitativo (supuestos, no datos de proceso)
 // en la CI se fuerza el caso desde la linea de compilacion: make Linux CFLAGS="... -DCASO_TUBERIA"
-#if !defined(CASO_TUBERIA) && !defined(CASO_RUSHTON)
-#define CASO_RUSHTON // caso por defecto al compilar en Windows
+#if !defined(CASO_TUBERIA) && !defined(CASO_RUSHTON) && !defined(CASO_R201)
+#define CASO_R201 // caso por defecto al compilar en Windows
 #endif
 #if defined(CASO_TUBERIA)
 #define VOLUME_FORCE
 #elif defined(CASO_RUSHTON)
 #define FORCE_FIELD
+#define MOVING_BOUNDARIES
+#define SUBGRID
+#elif defined(CASO_R201)
 #define MOVING_BOUNDARIES
 #define SUBGRID
 #endif

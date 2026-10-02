@@ -97,7 +97,7 @@ void main_setup() { // tuberia simple: flujo de Poiseuille en tubo circular, val
 
 
 
-#if !defined(BENCHMARK) && defined(CASO_RUSHTON)
+#if !defined(BENCHMARK) && (defined(CASO_RUSHTON) || defined(CASO_R201))
 inline void malla_caja(Mesh* mesh, uint& i, const float3& c, const float3& a, const float3& b, const float3& h) { // caja centrada en c con semiejes a, b, h (12 triangulos)
 	const float3 p[8] = { c-a-b-h, c+a-b-h, c+a+b-h, c-a+b-h, c-a-b+h, c+a-b+h, c+a+b+h, c-a+b+h };
 	const uint f[12][3] = { {0u,2u,1u}, {0u,3u,2u}, {4u,5u,6u}, {4u,6u,7u}, {0u,1u,5u}, {0u,5u,4u}, {1u,2u,6u}, {1u,6u,5u}, {2u,3u,7u}, {2u,7u,6u}, {3u,0u,4u}, {3u,4u,7u} };
@@ -138,6 +138,7 @@ inline double potencia_disipada(LBM& lbm, const float nu) { // P = sum 2*(nu+nu_
 	for(uint z=0u; z<Nz; z++) P += suma[z];
 	return P;
 }
+#if defined(CASO_RUSHTON)
 void main_setup() { // tanque agitado Rushton estandar, validacion del numero de potencia; required extensions in defines.hpp: FORCE_FIELD, MOVING_BOUNDARIES, SUBGRID
 	// geometria estandar (Hartmann et al. 2004, CES 59:2419): H=T, D=T/3, C=T/3, 4 deflectores de ancho 0.1T separados 0.017T de la pared,
 	// disco de diametro 0.75D, 6 palas de 0.25D (radial) x 0.2D (alto), tapa no deslizante en H
@@ -257,7 +258,126 @@ void main_setup() { // tanque agitado Rushton estandar, validacion del numero de
 	lbm.run(); // con graficos, la ventana sigue abierta
 #endif // GRAPHICS
 } /**/
-#endif // CASO_RUSHTON
+#endif // CASO_RUSHTON (main_setup)
+#if defined(CASO_R201)
+void main_setup() { // tanque agitado tipo R-201, palas inclinadas a 45 grados, analisis CUALITATIVO del patron de flujo; required extensions in defines.hpp: MOVING_BOUNDARIES, SUBGRID
+	// ESTADO: exploratorio. La geometria del R-201 no esta definida en el proyecto (H/D, impulsor, diametro, rpm, deflectores: todos abiertos, DEC-OE2-004).
+	// Todo lo que sigue son SUPUESTOS para ver un patron de flujo representativo, no datos de proceso:
+	// - tanque estandar H=T, impulsor D=T/3 a C=T/3, 4 deflectores de 0.1T (el proyecto no menciona deflectores)
+	// - turbina de 4 palas inclinadas a 45 grados, ancho de pala 0.2D, bombeo descendente (candidato del proyecto: palas inclinadas 30-45 grados)
+	// - liquido newtoniano monofasico (el medio real es una suspension de flakes de PET de reologia desconocida)
+	// - tapa no deslizante en H (el reactor real tiene superficie libre)
+	// - regimen turbulento a Re=29000; el reactor real operaria a Re mayor, donde el patron de flujo cambia poco
+	// Con este metodo (impulsor re-voxelizado) el numero de potencia NO valida (ver validacion/rushton.md): solo se reportan velocidades relativas a la punta de pala.
+	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
+	const float D = 60.0f; // diametro del impulsor en celdas
+	const float Re = 29000.0f; // Re = N*D^2/nu
+	const float u_punta = 0.1f; // velocidad de punta de pala en unidades de red
+	const uint dt = 1u; // re-voxelizacion en cada paso: la configuracion mas fiel probada en el Rushton
+	const uint rev_arranque = 10u, rev_estadistica = 20u, muestras_por_rev = 8u;
+	const float T = 3.0f*D;
+	const uint N = to_uint(T)+2u;
+	const uint pasos_rev = max(1u, to_uint(pif*D/(u_punta*(float)dt)+0.5f))*dt;
+	const float omega = 2.0f*pif/(float)pasos_rev;
+	const float n_rev = 1.0f/(float)pasos_rev;
+	const float nu = n_rev*sq(D)/Re;
+	LBM lbm(N, N, N, 1u, 1u, 1u, nu);
+	// ###################################################################################### define geometry ######################################################################################
+	const float3 c = lbm.center();
+	const float R = 0.5f*T, zc = 0.5f+T/3.0f;
+	const float ancho_deflector=0.1f*T, holgura_deflector=0.017f*T, espesor_deflector=2.0f;
+	const float espesor_pala = fmax(2.0f, 0.04f*D), ancho_pala = 0.2f*D;
+	const float radio_cubo = 0.1f*D, radio_eje = fmax(2.0f, 0.08f*D); // supuestos propios
+	const uint Nz = lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
+		const float px=(float)x-c.x, py=(float)y-c.y, r=sqrt(sq(px)+sq(py));
+		bool pared = r>R||z==0u||z==Nz-1u;
+		for(uint k=0u; k<4u; k++) { // deflectores a 45, 135, 225 y 315 grados: el plano x=centro (corte de la ventana) queda a medio camino entre deflectores
+			const float a=0.25f*pif+0.5f*pif*(float)k, rr=px*cosf(a)+py*sinf(a), tt=-px*sinf(a)+py*cosf(a);
+			if(rr>=R-holgura_deflector-ancho_deflector&&rr<=R-holgura_deflector&&fabs(tt)<=0.5f*espesor_deflector) pared = true;
+		}
+		if(pared) lbm.flags[n] = TYPE_S|TYPE_Y;
+		if(r<=radio_eje&&(float)z>=zc) {
+			lbm.flags[n] = TYPE_S;
+			lbm.u.x[n] = -omega*py;
+			lbm.u.y[n] =  omega*px;
+		}
+	});
+	const float3 ci = float3(c.x, c.y, zc);
+	const float alto_cubo = ancho_pala*0.70710678f; // altura vertical que ocupa una pala a 45 grados
+	const uint lados = 32u;
+	Mesh* cubo = new Mesh(4u*lados, ci);
+	uint i = 0u;
+	malla_disco(cubo, i, ci, radio_cubo, 0.5f*alto_cubo, lados);
+	cubo->find_bounds();
+	Mesh* palas = new Mesh(4u*12u, ci); // malla aparte del cubo, por el mismo motivo que en el Rushton
+	i = 0u;
+	for(uint k=0u; k<4u; k++) {
+		const float a = 0.5f*pif*(float)k;
+		const float3 er=float3(cosf(a), sinf(a), 0.0f), et=float3(-sinf(a), cosf(a), 0.0f), ez=float3(0.0f, 0.0f, 1.0f);
+		const float3 ew=0.70710678f*(et+ez), en=0.70710678f*(et-ez); // plano de la pala inclinado 45 grados; la cara de avance (normal en) empuja el fluido hacia abajo
+		const float r0=0.8f*radio_cubo, r1=0.5f*D; // la pala nace dentro del cubo para que no quede rendija
+		malla_caja(palas, i, ci+0.5f*(r0+r1)*er, 0.5f*(r1-r0)*er, 0.5f*ancho_pala*ew, 0.5f*espesor_pala*en);
+	}
+	palas->find_bounds();
+	// ####################################################################### run simulation, export images and data ##########################################################################
+#ifdef GRAPHICS
+	lbm.graphics.visualization_modes = VIS_FIELD|VIS_Q_CRITERION;
+	lbm.graphics.slice_mode = 1;
+#endif // GRAPHICS
+	const ulong t_total = (ulong)(rev_arranque+rev_estadistica)*(ulong)pasos_rev;
+	const uint paso_muestra = max(1u, pasos_rev/muestras_por_rev);
+	print_info("R-201 (exploratorio): T="+to_string(to_uint(T))+" D="+to_string(to_uint(D))+" Re="+to_string(to_uint(Re))+" pasos/rev="+to_string(pasos_rev)+" tau="+to_string(3.0f*nu+0.5f, 6u));
+	// promedio temporal en el host, solo en las celdas que se exportan: plano vertical por el eje (x = centro) y primera capa de fluido sobre el fondo (z = 1)
+	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny();
+	const uint xp = Nx/2u; // plano x = centro, a medio camino entre deflectores
+	vector<double> plano_uy((ulong)Ny*(ulong)Nz, 0.0), plano_uz((ulong)Ny*(ulong)Nz, 0.0), plano_ux((ulong)Ny*(ulong)Nz, 0.0);
+	vector<uint> plano_n((ulong)Ny*(ulong)Nz, 0u); // instantes en que cada celda del plano fue fluido: el impulsor barre el plano y no debe entrar en el promedio
+	vector<double> fondo_ux((ulong)Nx*(ulong)Ny, 0.0), fondo_uy((ulong)Nx*(ulong)Ny, 0.0), fondo_uz((ulong)Nx*(ulong)Ny, 0.0);
+	uint muestras = 0u;
+	lbm.run(0u, t_total);
+	while(lbm.get_t()<t_total) {
+		lbm.voxelize_mesh_on_device(palas, TYPE_S|TYPE_X|TYPE_Y, ci, float3(0.0f), float3(0.0f, 0.0f, omega));
+		lbm.voxelize_mesh_on_device(cubo, TYPE_S|TYPE_X, ci, float3(0.0f), float3(0.0f, 0.0f, omega));
+		lbm.run(dt, t_total);
+		palas->rotate(float3x3(float3(0.0f, 0.0f, 1.0f), omega*(float)dt));
+		cubo->rotate(float3x3(float3(0.0f, 0.0f, 1.0f), omega*(float)dt));
+		if(lbm.get_t()>(ulong)rev_arranque*(ulong)pasos_rev&&lbm.get_t()%(ulong)paso_muestra==0ull) {
+			lbm.u.read_from_device();
+			lbm.flags.read_from_device();
+			for(uint z=0u; z<Nz; z++) for(uint y=0u; y<Ny; y++) { const ulong n=lbm.index(xp, y, z), m=(ulong)y+(ulong)z*(ulong)Ny; if(lbm.flags[n]&TYPE_S) continue; plano_ux[m]+=lbm.u.x[n]; plano_uy[m]+=lbm.u.y[n]; plano_uz[m]+=lbm.u.z[n]; plano_n[m]++; }
+			for(uint y=0u; y<Ny; y++) for(uint x=0u; x<Nx; x++) { const ulong n=lbm.index(x, y, 1u), m=(ulong)x+(ulong)y*(ulong)Nx; fondo_ux[m]+=lbm.u.x[n]; fondo_uy[m]+=lbm.u.y[n]; fondo_uz[m]+=lbm.u.z[n]; }
+			muestras++;
+		}
+		if(lbm.get_t()%(ulong)pasos_rev==0ull) print_info("R-201 rev "+to_string((uint)(lbm.get_t()/(ulong)pasos_rev))+(lbm.get_t()<=(ulong)rev_arranque*(ulong)pasos_rev ? " (arranque)" : "")+", muestras promediadas: "+to_string(muestras));
+	}
+	// exportar velocidades medias normalizadas por la velocidad de punta; coordenadas normalizadas por T (r) y por H=T (z)
+	lbm.flags.read_from_device();
+	const double k = 1.0/((double)muestras*(double)u_punta);
+	string s = "# R-201 exploratorio, plano vertical por el eje a medio camino entre deflectores. r/T y z/H; u_r (radial), u_t (tangencial) y u_z (axial) medias / u_punta; solido=1 donde la celda nunca fue fluido (paredes, eje y nucleo del cubo)\nr_T,z_H,u_r,u_t,u_z,solido\n";
+	for(uint z=1u; z<Nz-1u; z++) for(uint y=0u; y<Ny; y++) {
+		const float py=(float)y-c.y; if(fabs(py)>R) continue;
+		const ulong m=(ulong)y+(ulong)z*(ulong)Ny;
+		const double kp = plano_n[m]>0u ? 1.0/((double)plano_n[m]*(double)u_punta) : 0.0; // media solo sobre los instantes en que la celda fue fluido
+		const double ur=py>=0.0f ? plano_uy[m] : -plano_uy[m], ut=py>=0.0f ? -plano_ux[m] : plano_ux[m]; // en el plano x=centro, er=+-y y et=-+x
+		s += to_string(py/T, 4u)+","+to_string(((float)z-0.5f)/T, 4u)+","+to_string(ur*kp, 5u)+","+to_string(ut*kp, 5u)+","+to_string(plano_uz[m]*kp, 5u)+","+to_string((uint)(plano_n[m]==0u))+"\n";
+	}
+	write_file(get_exe_path()+"r201_plano.csv", s);
+	s = "# R-201 exploratorio, primera capa de fluido sobre el fondo (z = 0.5 celdas sobre la pared). x/T, y/T; u_h = |velocidad horizontal| media / u_punta; u_z media / u_punta\nx_T,y_T,u_h,u_z,solido\n";
+	for(uint y=0u; y<Ny; y++) for(uint x=0u; x<Nx; x++) {
+		const float px=(float)x-c.x, py=(float)y-c.y; if(sqrt(sq(px)+sq(py))>R) continue;
+		const ulong m=(ulong)x+(ulong)y*(ulong)Nx;
+		s += to_string(px/T, 4u)+","+to_string(py/T, 4u)+","+to_string(sqrt(sq(fondo_ux[m])+sq(fondo_uy[m]))*k, 5u)+","+to_string(fondo_uz[m]*k, 5u)+","+to_string((uint)((lbm.flags[lbm.index(x, y, 1u)]&TYPE_S)!=0u))+"\n";
+	}
+	write_file(get_exe_path()+"r201_fondo.csv", s);
+	print_info("R-201: velocidades medias de "+to_string(muestras)+" instantaneas en "+get_exe_path()+"r201_plano.csv y r201_fondo.csv");
+	delete palas;
+	delete cubo;
+#ifdef GRAPHICS
+	lbm.run();
+#endif // GRAPHICS
+} /**/
+#endif // CASO_R201
+#endif // CASO_RUSHTON || CASO_R201
 
 
 
